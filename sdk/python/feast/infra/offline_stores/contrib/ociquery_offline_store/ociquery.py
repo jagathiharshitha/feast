@@ -27,10 +27,10 @@ from feast.errors import InvalidEntityType
 from feast.feature_logging import LoggingConfig, LoggingSource
 from feast.feature_view import DUMMY_ENTITY_ID, DUMMY_ENTITY_VAL, FeatureView
 from feast.infra.offline_stores import offline_utils
-from feast.infra.offline_stores.contrib.athena_offline_store.athena_source import (
-    AthenaLoggingDestination,
-    AthenaSource,
-    SavedDatasetAthenaStorage,
+from feast.infra.offline_stores.contrib.ociquery_offline_store.ociquery_source import (
+    OciQueryLoggingDestination,
+    OciQuerySource,
+    SavedDatasetOciQueryStorage,
 )
 from feast.infra.offline_stores.offline_store import (
     OfflineStore,
@@ -39,7 +39,7 @@ from feast.infra.offline_stores.offline_store import (
 )
 from feast.infra.registry.base_registry import BaseRegistry
 from feast.infra.registry.registry import Registry
-from feast.infra.utils import aws_utils
+from feast.infra.utils import oci_utils
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
 from feast.saved_dataset import SavedDatasetStorage
 from feast.usage import log_exceptions_and_usage
@@ -100,8 +100,8 @@ class OciQueryOfflineStore(OfflineStore):
 
         date_partition_column = data_source.date_partition_column
 
-        athena_client = aws_utils.get_athena_data_client(config.offline_store.region)
-        s3_resource = aws_utils.get_s3_resource(config.offline_store.region)
+        oci_query_client = oci_utils.get_oci_query_data_client(config.offline_store.region)
+        oss_resource = oci_utils.get_oss_resource(config.offline_store.region)
 
         start_date = start_date.astimezone(tz=utc)
         end_date = end_date.astimezone(tz=utc)
@@ -122,8 +122,8 @@ class OciQueryOfflineStore(OfflineStore):
         # When materializing a single feature view, we don't need full feature names. On demand transforms aren't materialized
         return OciQueryRetrievalJob(
             query=query,
-            athena_client=athena_client,
-            s3_resource=s3_resource,
+            oci_query_client=oci_query_client,
+            oss_resource=oss_resource,
             config=config,
             full_feature_names=False,
         )
@@ -147,8 +147,8 @@ class OciQueryOfflineStore(OfflineStore):
             join_key_columns + feature_name_columns + [timestamp_field]
         )
 
-        athena_client = aws_utils.get_athena_data_client(config.offline_store.region)
-        s3_resource = aws_utils.get_s3_resource(config.offline_store.region)
+        oci_query_client = oci_utils.get_oci_query_data_client(config.offline_store.region)
+        oss_resource = oci_utils.get_oss_resource(config.offline_store.region)
 
         date_partition_column = data_source.date_partition_column
 
@@ -161,8 +161,8 @@ class OciQueryOfflineStore(OfflineStore):
 
         return OciQueryRetrievalJob(
             query=query,
-            athena_client=athena_client,
-            s3_resource=s3_resource,
+            oci_query_client=oci_query_client,
+            oss_resource=oss_resource,
             config=config,
             full_feature_names=False,
         )
@@ -182,12 +182,12 @@ class OciQueryOfflineStore(OfflineStore):
         for fv in feature_views:
             assert isinstance(fv.batch_source, OciQuerySource)
 
-        athena_client = aws_utils.get_athena_data_client(config.offline_store.region)
-        s3_resource = aws_utils.get_s3_resource(config.offline_store.region)
+        oci_query_client = oci_utils.get_ociquery_data_client()
+        oss_resource = oci_utils.get_oss_resource()
 
         # get pandas dataframe consisting of 1 row (LIMIT 1) and generate the schema out of it
         entity_schema = _get_entity_schema(
-            entity_df, athena_client, config, s3_resource
+            entity_df, oci_query_client, config, oss_resource
         )
 
         # find timestamp column of entity df.(default = "event_timestamp"). Exception occurs if there are more than two timestamp columns.
@@ -199,7 +199,7 @@ class OciQueryOfflineStore(OfflineStore):
         entity_df_event_timestamp_range = _get_entity_df_event_timestamp_range(
             entity_df,
             entity_df_event_timestamp_col,
-            athena_client,
+            oci_query_client,
             config,
         )
 
@@ -208,7 +208,7 @@ class OciQueryOfflineStore(OfflineStore):
 
             table_name = offline_utils.get_temp_entity_table_name()
 
-            _upload_entity_df(entity_df, athena_client, config, s3_resource, table_name)
+            _upload_entity_df(entity_df, oci_query_client, config, oss_resource, table_name)
 
             expected_join_keys = offline_utils.get_expected_join_keys(
                 project, feature_views, registry
@@ -218,7 +218,7 @@ class OciQueryOfflineStore(OfflineStore):
                 entity_schema, expected_join_keys, entity_df_event_timestamp_col
             )
 
-            # Build a query context containing all information required to template the Athena SQL query
+            # Build a query context containing all information required to template the OciQuery SQL query
             query_context = offline_utils.get_feature_view_query_context(
                 feature_refs,
                 feature_views,
@@ -227,7 +227,7 @@ class OciQueryOfflineStore(OfflineStore):
                 entity_df_event_timestamp_range,
             )
 
-            # Generate the Athena SQL query from the query context
+            # Generate the OciQuery SQL query from the query context
             query = offline_utils.build_point_in_time_query(
                 query_context,
                 left_table_query_string=table_name,
@@ -241,26 +241,26 @@ class OciQueryOfflineStore(OfflineStore):
                 yield query
             finally:
 
-                # Always clean up the temp Athena table
-                aws_utils.execute_athena_query(
-                    athena_client,
+                # Always clean up the temp OciQuery table
+                oci_utils.execute_oci_query_query(
+                    oci_query_client,
                     config.offline_store.data_source,
                     config.offline_store.database,
                     config.offline_store.workgroup,
                     f"DROP TABLE IF EXISTS {config.offline_store.database}.{table_name}",
                 )
 
-                bucket = config.offline_store.s3_staging_location.replace(
-                    "s3://", ""
+                bucket = config.offline_store.oss_staging_location.replace(
+                    "oss://", ""
                 ).split("/", 1)[0]
-                aws_utils.delete_s3_directory(
-                    s3_resource, bucket, "entity_df/" + table_name + "/"
+                oci_utils.delete_oss_directory(
+                    oss_resource, bucket, "entity_df/" + table_name + "/"
                 )
 
         return OciQueryRetrievalJob(
             query=query_generator,
-            athena_client=athena_client,
-            s3_resource=s3_resource,
+            oci_query_client=oci_query_client,
+            oss_resource=oss_resource,
             config=config,
             full_feature_names=full_feature_names,
             on_demand_feature_views=OnDemandFeatureView.get_requested_odfvs(
@@ -283,23 +283,23 @@ class OciQueryOfflineStore(OfflineStore):
             registry: BaseRegistry,
     ):
         destination = logging_config.destination
-        assert isinstance(destination, AthenaLoggingDestination)
+        assert isinstance(destination, OciQueryLoggingDestination)
 
-        athena_client = aws_utils.get_athena_data_client(config.offline_store.region)
-        s3_resource = aws_utils.get_s3_resource(config.offline_store.region)
+        oci_query_client = oci_utils.get_oci_query_data_client(config.offline_store.region)
+        oss_resource = oci_utils.get_oss_resource(config.offline_store.region)
         if isinstance(data, Path):
-            s3_path = f"{config.offline_store.s3_staging_location}/logged_features/{uuid.uuid4()}"
+            oss_path = f"{config.offline_store.oss_staging_location}/logged_features/{uuid.uuid4()}"
         else:
-            s3_path = f"{config.offline_store.s3_staging_location}/logged_features/{uuid.uuid4()}.parquet"
+            oss_path = f"{config.offline_store.oss_staging_location}/logged_features/{uuid.uuid4()}.parquet"
 
-        aws_utils.upload_arrow_table_to_athena(
+        oci_utils.upload_arrow_table_to_oci_query(
             table=data,
-            athena_client=athena_client,
+            oci_query_client=oci_query_client,
             data_source=config.offline_store.data_source,
             database=config.offline_store.database,
             workgroup=config.offline_store.workgroup,
-            s3_resource=s3_resource,
-            s3_path=s3_path,
+            oss_resource=oss_resource,
+            oss_path=oss_path,
             table_name=destination.table_name,
             schema=source.get_schema(registry),
             fail_if_exists=False,
@@ -310,19 +310,19 @@ class OciQueryRetrievalJob(RetrievalJob):
     def __init__(
             self,
             query: Union[str, Callable[[], ContextManager[str]]],
-            athena_client,
-            s3_resource,
+            oci_query_client,
+            oss_resource,
             config: RepoConfig,
             full_feature_names: bool,
             on_demand_feature_views: Optional[List[OnDemandFeatureView]] = None,
             metadata: Optional[RetrievalMetadata] = None,
     ):
-        """Initialize AthenaRetrievalJob object.
+        """Initialize OciQueryRetrievalJob object.
 
         Args:
-            query: Athena SQL query to execute. Either a string, or a generator function that handles the artifact cleanup.
-            athena_client: boto3 athena client
-            s3_resource: boto3 s3 resource object
+            query: OciQuery SQL query to execute. Either a string, or a generator function that handles the artifact cleanup.
+            oci_query_client: boto3 oci_query client
+            oss_resource: boto3 oss resource object
             config: Feast repo config
             full_feature_names: Whether to add the feature view prefixes to the feature names
             on_demand_feature_views (optional): A list of on demand transforms to apply at retrieval time
@@ -338,8 +338,8 @@ class OciQueryRetrievalJob(RetrievalJob):
                 yield query
 
             self._query_generator = query_generator
-        self._athena_client = athena_client
-        self._s3_resource = s3_resource
+        self._oci_query_client = oci_query_client
+        self._oss_resource = oss_resource
         self._config = config
         self._full_feature_names = full_feature_names
         self._on_demand_feature_views = on_demand_feature_views or []
@@ -353,9 +353,9 @@ class OciQueryRetrievalJob(RetrievalJob):
     def on_demand_feature_views(self) -> List[OnDemandFeatureView]:
         return self._on_demand_feature_views
 
-    def get_temp_s3_path(self) -> str:
+    def get_temp_oss_path(self) -> str:
         return (
-                self._config.offline_store.s3_staging_location
+                self._config.offline_store.oss_staging_location
                 + "/unload/"
                 + str(uuid.uuid4())
         )
@@ -378,13 +378,13 @@ class OciQueryRetrievalJob(RetrievalJob):
     def _to_df_internal(self, timeout: Optional[int] = None) -> pd.DataFrame:
         with self._query_generator() as query:
             temp_table_name = "_" + str(uuid.uuid4()).replace("-", "")
-            temp_external_location = self.get_temp_s3_path()
-            return aws_utils.unload_athena_query_to_df(
-                self._athena_client,
+            temp_external_location = self.get_temp_oss_path()
+            return oci_utils.unload_oci_query_query_to_df(
+                self._oci_query_client,
                 self._config.offline_store.data_source,
                 self._config.offline_store.database,
                 self._config.offline_store.workgroup,
-                self._s3_resource,
+                self._oss_resource,
                 temp_external_location,
                 self.get_temp_table_dml_header(temp_table_name, temp_external_location)
                 + query,
@@ -395,13 +395,13 @@ class OciQueryRetrievalJob(RetrievalJob):
     def _to_arrow_internal(self, timeout: Optional[int] = None) -> pa.Table:
         with self._query_generator() as query:
             temp_table_name = "_" + str(uuid.uuid4()).replace("-", "")
-            temp_external_location = self.get_temp_s3_path()
-            return aws_utils.unload_athena_query_to_pa(
-                self._athena_client,
+            temp_external_location = self.get_temp_oss_path()
+            return oci_utils.unload_oci_query_query_to_pa(
+                self._oci_query_client,
                 self._config.offline_store.data_source,
                 self._config.offline_store.database,
                 self._config.offline_store.workgroup,
-                self._s3_resource,
+                self._oss_resource,
                 temp_external_location,
                 self.get_temp_table_dml_header(temp_table_name, temp_external_location)
                 + query,
@@ -413,20 +413,20 @@ class OciQueryRetrievalJob(RetrievalJob):
         return self._metadata
 
     def persist(self, storage: SavedDatasetStorage, allow_overwrite: bool = False):
-        assert isinstance(storage, SavedDatasetAthenaStorage)
-        self.to_athena(table_name=storage.athena_options.table)
+        assert isinstance(storage, SavedDatasetOciQueryStorage)
+        self.to_oci_query(table_name=storage.oci_query_options.table)
 
     @log_exceptions_and_usage
-    def to_athena(self, table_name: str) -> None:
+    def to_oci_query(self, table_name: str) -> None:
 
         if self.on_demand_feature_views:
             transformed_df = self.to_df()
 
             _upload_entity_df(
                 transformed_df,
-                self._athena_client,
+                self._oci_query_client,
                 self._config,
-                self._s3_resource,
+                self._oss_resource,
                 table_name,
             )
 
@@ -435,8 +435,8 @@ class OciQueryRetrievalJob(RetrievalJob):
         with self._query_generator() as query:
             query = f'CREATE TABLE "{table_name}" AS ({query});\n'
 
-            aws_utils.execute_athena_query(
-                self._athena_client,
+            oci_utils.execute_oci_query_query(
+                self._oci_query_client,
                 self._config.offline_store.data_source,
                 self._config.offline_store.database,
                 self._config.offline_store.workgroup,
@@ -446,27 +446,27 @@ class OciQueryRetrievalJob(RetrievalJob):
 
 def _upload_entity_df(
         entity_df: Union[pd.DataFrame, str],
-        athena_client,
+        oci_query_client,
         config: RepoConfig,
-        s3_resource,
+        oss_resource,
         table_name: str,
 ):
     if isinstance(entity_df, pd.DataFrame):
-        # If the entity_df is a pandas dataframe, upload it to Athena
-        aws_utils.upload_df_to_athena(
-            athena_client,
+        # If the entity_df is a pandas dataframe, upload it to OciQuery
+        oci_utils.upload_df_to_oci_query(
+            oci_query_client,
             config.offline_store.data_source,
             config.offline_store.database,
             config.offline_store.workgroup,
-            s3_resource,
-            f"{config.offline_store.s3_staging_location}/entity_df/{table_name}/{table_name}.parquet",
+            oss_resource,
+            f"{config.offline_store.oss_staging_location}/entity_df/{table_name}/{table_name}.parquet",
             table_name,
             entity_df,
         )
     elif isinstance(entity_df, str):
-        # If the entity_df is a string (SQL query), create a Athena table out of it
-        aws_utils.execute_athena_query(
-            athena_client,
+        # If the entity_df is a string (SQL query), create a OciQuery table out of it
+        oci_utils.execute_oci_query_query(
+            oci_query_client,
             config.offline_store.data_source,
             config.offline_store.database,
             config.offline_store.workgroup,
@@ -478,19 +478,19 @@ def _upload_entity_df(
 
 def _get_entity_schema(
         entity_df: Union[pd.DataFrame, str],
-        athena_client,
+        oci_query_client,
         config: RepoConfig,
-        s3_resource,
+        oss_resource,
 ) -> Dict[str, np.dtype]:
     if isinstance(entity_df, pd.DataFrame):
         return dict(zip(entity_df.columns, entity_df.dtypes))
 
     elif isinstance(entity_df, str):
         # get pandas dataframe consisting of 1 row (LIMIT 1) and generate the schema out of it
-        entity_df_sample = AthenaRetrievalJob(
+        entity_df_sample = OciQueryRetrievalJob(
             f"SELECT * FROM ({entity_df}) LIMIT 1",
-            athena_client,
-            s3_resource,
+            oci_query_client,
+            oss_resource,
             config,
             full_feature_names=False,
         ).to_df()
@@ -502,7 +502,7 @@ def _get_entity_schema(
 def _get_entity_df_event_timestamp_range(
         entity_df: Union[pd.DataFrame, str],
         entity_df_event_timestamp_col: str,
-        athena_client,
+        oci_query_client,
         config: RepoConfig,
 ) -> Tuple[datetime, datetime]:
     if isinstance(entity_df, pd.DataFrame):
@@ -520,15 +520,15 @@ def _get_entity_df_event_timestamp_range(
     elif isinstance(entity_df, str):
         # If the entity_df is a string (SQL query), determine range
         # from table
-        statement_id = aws_utils.execute_athena_query(
-            athena_client,
+        statement_id = oci_utils.execute_oci_query_query(
+            oci_query_client,
             config.offline_store.data_source,
             config.offline_store.database,
             config.offline_store.workgroup,
             f"SELECT MIN({entity_df_event_timestamp_col}) AS min, MAX({entity_df_event_timestamp_col}) AS max "
             f"FROM ({entity_df})",
         )
-        res = aws_utils.get_athena_query_result(athena_client, statement_id)
+        res = oci_utils.get_oci_query_query_result(oci_query_client, statement_id)
         entity_df_event_timestamp_range = (
             datetime.strptime(
                 res["Rows"][1]["Data"][0]["VarCharValue"], "%Y-%m-%d %H:%M:%S.%f"

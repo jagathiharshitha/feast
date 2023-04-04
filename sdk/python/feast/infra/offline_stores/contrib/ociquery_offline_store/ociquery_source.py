@@ -53,11 +53,11 @@ class OciQuerySource(DataSource):
                 case the table must be specified.
             description (optional): A human-readable description.
             tags (optional): A dictionary of key-value pairs to store arbitrary metadata.
-            owner (optional): The owner of the athena source, typically the email of the primary
+            owner (optional): The owner of the oci_query source, typically the email of the primary
                 maintainer.
         """
         _database = "default" if table and not database else database
-        self.athena_options = OciQueryOptions(
+        self.oci_query_options = OciQueryOptions(
             table=table, query=query, database=_database, data_source=data_source
         )
 
@@ -84,24 +84,24 @@ class OciQuerySource(DataSource):
     @staticmethod
     def from_proto(data_source: DataSourceProto):
         """
-        Creates a AthenaSource from a protobuf representation of a AthenaSource.
+        Creates a OciQuerySource from a protobuf representation of a OciQuerySource.
 
         Args:
-            data_source: A protobuf representation of a AthenaSource
+            data_source: A protobuf representation of a OciQuerySource
 
         Returns:
-            A AthenaSource object based on the data_source protobuf.
+            A OciQuerySource object based on the data_source protobuf.
         """
         return OciQuerySource(
             name=data_source.name,
             timestamp_field=data_source.timestamp_field,
-            table=data_source.athena_options.table,
-            database=data_source.athena_options.database,
-            data_source=data_source.athena_options.data_source,
+            table=data_source.oci_query_options.table,
+            database=data_source.oci_query_options.database,
+            data_source=data_source.oci_query_options.data_source,
             created_timestamp_column=data_source.created_timestamp_column,
             field_mapping=dict(data_source.field_mapping),
             date_partition_column=data_source.date_partition_column,
-            query=data_source.athena_options.query,
+            query=data_source.oci_query_options.query,
             description=data_source.description,
             tags=dict(data_source.tags),
         )
@@ -113,36 +113,36 @@ class OciQuerySource(DataSource):
     def __eq__(self, other):
         if not isinstance(other, OciQuerySource):
             raise TypeError(
-                "Comparisons should only involve AthenaSource class objects."
+                "Comparisons should only involve OciQuerySource class objects."
             )
 
         return (
                 super().__eq__(other)
-                and self.athena_options.table == other.athena_options.table
-                and self.athena_options.query == other.athena_options.query
-                and self.athena_options.database == other.athena_options.database
-                and self.athena_options.data_source == other.athena_options.data_source
+                and self.oci_query_options.table == other.oci_query_options.table
+                and self.oci_query_options.query == other.oci_query_options.query
+                and self.oci_query_options.database == other.oci_query_options.database
+                and self.oci_query_options.data_source == other.oci_query_options.data_source
         )
 
     @property
     def table(self):
-        """Returns the table of this Athena source."""
-        return self.athena_options.table
+        """Returns the table of this OciQuery source."""
+        return self.oci_query_options.table
 
     @property
     def database(self):
-        """Returns the database of this Athena source."""
-        return self.athena_options.database
+        """Returns the database of this OciQuery source."""
+        return self.oci_query_options.database
 
     @property
     def query(self):
-        """Returns the Athena query of this Athena source."""
-        return self.athena_options.query
+        """Returns the OciQuery query of this OciQuery source."""
+        return self.oci_query_options.query
 
     @property
     def data_source(self):
-        """Returns the Athena data_source of this Athena source."""
-        return self.athena_options.data_source
+        """Returns the OciQuery data_source of this OciQuery source."""
+        return self.oci_query_options.data_source
 
     def to_proto(self) -> DataSourceProto:
         """
@@ -160,7 +160,7 @@ class OciQuerySource(DataSource):
             date_partition_column=self.date_partition_column,
             description=self.description,
             tags=self.tags,
-            athena_options=self.athena_options.to_proto(),
+            oci_query_options=self.oci_query_options.to_proto(),
         )
 
         return data_source_proto
@@ -184,27 +184,27 @@ class OciQuerySource(DataSource):
 
     @staticmethod
     def source_datatype_to_feast_value_type() -> Callable[[str], ValueType]:
-        return type_map.athena_to_feast_value_type
+        return type_map.oci_query_to_feast_value_type
 
     def get_table_column_names_and_types(
             self, config: RepoConfig
     ) -> Iterable[Tuple[str, str]]:
         """
-        Returns a mapping of column names to types for this Athena source.
+        Returns a mapping of column names to types for this OciQuery source.
 
         Args:
             config: A RepoConfig describing the feature repo
         """
         from botocore.exceptions import ClientError
 
-        from feast.infra.offline_stores.contrib.athena_offline_store.athena import (
-            AthenaOfflineStoreConfig,
+        from sdk.python.feast.infra.offline_stores.contrib.ociquery_offline_store.ociquery import (
+            OciQueryOfflineStoreConfig,
         )
-        from feast.infra.utils import aws_utils
+        from sdk.python.feast.infra.utils import oci_utils
 
-        assert isinstance(config.offline_store, AthenaOfflineStoreConfig)
+        assert isinstance(config.offline_store, OciQueryOfflineStoreConfig)
 
-        client = aws_utils.get_athena_data_client(config.offline_store.region)
+        client = oci_utils.get_oci_query_data_client(config.offline_store.region)
         if self.table:
             try:
                 table = client.get_table_metadata(
@@ -213,7 +213,7 @@ class OciQuerySource(DataSource):
                     TableName=self.table,
                 )
             except ClientError as e:
-                raise aws_utils.AthenaError(e)
+                raise oci_utils.OciQueryError(e)
 
             # The API returns valid JSON with empty column list when the table doesn't exist
             if len(table["TableMetadata"]["Columns"]) == 0:
@@ -221,14 +221,14 @@ class OciQuerySource(DataSource):
 
             columns = table["TableMetadata"]["Columns"]
         else:
-            statement_id = aws_utils.execute_athena_query(
+            statement_id = oci_utils.execute_oci_query_query(
                 client,
                 config.offline_store.data_source,
                 config.offline_store.database,
                 config.offline_store.workgroup,
                 f"SELECT * FROM ({self.query}) LIMIT 1",
             )
-            columns = aws_utils.get_athena_query_result(client, statement_id)[
+            columns = oci_utils.get_oci_query_query_result(client, statement_id)[
                 "ResultSetMetadata"
             ]["ColumnInfo"]
 
@@ -237,7 +237,7 @@ class OciQuerySource(DataSource):
 
 class OciQueryOptions:
     """
-    Configuration options for a Athena data source.
+    Configuration options for a OciQuery data source.
     """
 
     def __init__(
@@ -253,46 +253,46 @@ class OciQueryOptions:
         self.data_source = data_source or ""
 
     @classmethod
-    def from_proto(cls, athena_options_proto: DataSourceProto.AthenaOptions):
+    def from_proto(cls, oci_query_options_proto: DataSourceProto.OciQueryOptions):
         """
-        Creates a AthenaOptions from a protobuf representation of a Athena option.
+        Creates a OciQueryOptions from a protobuf representation of a OciQuery option.
 
         Args:
-            athena_options_proto: A protobuf representation of a DataSource
+            oci_query_options_proto: A protobuf representation of a DataSource
 
         Returns:
-            A AthenaOptions object based on the athena_options protobuf.
+            A OciQueryOptions object based on the oci_query_options protobuf.
         """
-        athena_options = cls(
-            table=athena_options_proto.table,
-            query=athena_options_proto.query,
-            database=athena_options_proto.database,
-            data_source=athena_options_proto.data_source,
+        oci_query_options = cls(
+            table=oci_query_options_proto.table,
+            query=oci_query_options_proto.query,
+            database=oci_query_options_proto.database,
+            data_source=oci_query_options_proto.data_source,
         )
 
-        return athena_options
+        return oci_query_options
 
-    def to_proto(self) -> DataSourceProto.AthenaOptions:
+    def to_proto(self) -> DataSourceProto.OciQueryOptions:
         """
-        Converts an AthenaOptionsProto object to its protobuf representation.
+        Converts an OciQueryOptionsProto object to its protobuf representation.
 
         Returns:
-            A AthenaOptionsProto protobuf.
+            A OciQueryOptionsProto protobuf.
         """
-        athena_options_proto = DataSourceProto.AthenaOptions(
+        oci_query_options_proto = DataSourceProto.OciQueryOptions(
             table=self.table,
             query=self.query,
             database=self.database,
             data_source=self.data_source,
         )
 
-        return athena_options_proto
+        return oci_query_options_proto
 
 
 class SavedDatasetOciQueryStorage(SavedDatasetStorage):
     _proto_attr_name = "oci_query_storage"
 
-    athena_options: OciQueryOptions
+    oci_query_options: OciQueryOptions
 
     def __init__(
             self,
@@ -301,7 +301,7 @@ class SavedDatasetOciQueryStorage(SavedDatasetStorage):
             database: str = None,
             data_source: str = None,
     ):
-        self.athena_options = OciQueryOptions(
+        self.oci_query_options = OciQueryOptions(
             table=table_ref, query=query, database=database, data_source=data_source
         )
 
@@ -309,14 +309,14 @@ class SavedDatasetOciQueryStorage(SavedDatasetStorage):
     def from_proto(storage_proto: SavedDatasetStorageProto) -> SavedDatasetStorage:
 
         return SavedDatasetOciQueryStorage(
-            table_ref=OciQueryOptions.from_proto(storage_proto.athena_storage).table
+            table_ref=OciQueryOptions.from_proto(storage_proto.oci_query_storage).table
         )
 
     def to_proto(self) -> SavedDatasetStorageProto:
         return SavedDatasetStorageProto(oci_query_storage=self.oci_query_options.to_proto())
 
     def to_data_source(self) -> DataSource:
-        return OciQuerySource(table=self.athena_options.table)
+        return OciQuerySource(table=self.oci_query_options.table)
 
 
 class OciQueryLoggingDestination(LoggingDestination):
